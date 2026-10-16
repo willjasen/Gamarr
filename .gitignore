@@ -106,6 +106,7 @@ _NCrunch_*
 _TeamCity*
 
 # Gamarr
+/runbooks/
 config.xml
 nzbdrone.log*txt
 UpdateLogs/
