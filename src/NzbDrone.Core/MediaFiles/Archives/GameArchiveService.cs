@@ -14,6 +14,8 @@ namespace NzbDrone.Core.MediaFiles.Archives
     {
         GameArchiveInspection InspectImportUnit(string path);
         void ExtractEntry(GameArchiveInspection inspection, string destinationPath);
+        string ExtractFolderArchive(string releaseFolder);
+        string ExtractArchive(string archivePath);
     }
 
     /// <summary>
@@ -35,7 +37,12 @@ namespace NzbDrone.Core.MediaFiles.Archives
         {
             ".7z",
             ".rar",
-            ".zip"
+            ".zip",
+            ".tar",
+            ".tgz",
+            ".gz",
+            ".bz2",
+            ".xz"
         };
 
         /// <summary>
@@ -205,6 +212,123 @@ namespace NzbDrone.Core.MediaFiles.Archives
             }
 
             _diskProvider.MoveFile(partialPath, destinationPath);
+        }
+
+        /// <summary>
+        /// Extract a release folder's one archive when it contains a multi-file
+        /// payload rather than one recognized ROM. The torrent source stays
+        /// untouched; the extracted sibling folder can be imported as a unit.
+        /// </summary>
+        public string ExtractFolderArchive(string releaseFolder)
+        {
+            var archivePath = FindSoleArchiveInFolder(releaseFolder);
+
+            return archivePath == null ? null : ExtractArchive(archivePath);
+        }
+
+        public string ExtractArchive(string archivePath)
+        {
+            if (!IsContainer(archivePath) || SplitVolumeRegex.IsMatch(archivePath))
+            {
+                return null;
+            }
+
+            try
+            {
+                if (Inspect(archivePath) != null)
+                {
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Unable to inspect {0} before folder extraction", archivePath);
+            }
+
+            var destinationFolder = Path.Combine(Path.GetDirectoryName(archivePath), Path.GetFileNameWithoutExtension(archivePath) + ".gamarr-unpacked");
+
+            if (_diskProvider.FolderExists(destinationFolder))
+            {
+                _logger.Debug("Using existing extracted archive folder {0}", destinationFolder);
+
+                return destinationFolder;
+            }
+
+            var stagingFolder = destinationFolder + ".partial~";
+
+            if (_diskProvider.FolderExists(stagingFolder))
+            {
+                _logger.Debug("Removing stale partial extraction folder {0}", stagingFolder);
+                _diskProvider.DeleteFolder(stagingFolder, true);
+            }
+
+            _logger.Info("Extracting archive {0} to {1}", archivePath, destinationFolder);
+
+            try
+            {
+                _diskProvider.CreateFolder(stagingFolder);
+
+                using (var archive = ArchiveFactory.Open(archivePath))
+                {
+                    var extractedEntries = 0;
+
+                    foreach (var entry in archive.Entries.Where(e => !e.IsDirectory))
+                    {
+                        var entryPath = GetSafeEntryPath(stagingFolder, entry.Key);
+                        var entryDirectory = Path.GetDirectoryName(entryPath);
+
+                        if (!_diskProvider.FolderExists(entryDirectory))
+                        {
+                            _diskProvider.CreateFolder(entryDirectory);
+                        }
+
+                        using (var entryStream = entry.OpenEntryStream())
+                        using (var outputStream = _diskProvider.OpenWriteStream(entryPath))
+                        {
+                            entryStream.CopyTo(outputStream);
+                        }
+
+                        extractedEntries++;
+                    }
+
+                    if (extractedEntries == 0)
+                    {
+                        throw new GameArchiveExtractionException($"Archive {archivePath} contains no files to extract");
+                    }
+                }
+
+                _diskProvider.MoveFolder(stagingFolder, destinationFolder);
+
+                return destinationFolder;
+            }
+            catch (Exception ex)
+            {
+                if (_diskProvider.FolderExists(stagingFolder))
+                {
+                    _diskProvider.DeleteFolder(stagingFolder, true);
+                }
+
+                throw new GameArchiveExtractionException($"Failed to extract archive {archivePath}: {ex.Message}", ex);
+            }
+        }
+
+        private static string GetSafeEntryPath(string destinationFolder, string entryName)
+        {
+            if (entryName.IsNullOrWhiteSpace() || Path.IsPathRooted(entryName) || entryName.Contains(':'))
+            {
+                throw new GameArchiveExtractionException($"Archive contains an invalid path: {entryName}");
+            }
+
+            var relativePath = entryName.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
+            var fullDestination = Path.GetFullPath(destinationFolder).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var fullPath = Path.GetFullPath(Path.Combine(destinationFolder, relativePath));
+
+            if (!fullPath.StartsWith(fullDestination, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new GameArchiveExtractionException($"Archive entry is outside the extraction folder: {entryName}");
+            }
+
+            return fullPath;
         }
 
         private string FindSoleArchiveInFolder(string folder)

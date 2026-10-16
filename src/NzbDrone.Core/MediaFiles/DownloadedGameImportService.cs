@@ -10,6 +10,7 @@ using NzbDrone.Core.Configuration;
 using NzbDrone.Core.Download;
 using NzbDrone.Core.History;
 using NzbDrone.Core.MediaFiles.GameImport;
+using NzbDrone.Core.MediaFiles.Archives;
 using NzbDrone.Core.Games;
 using NzbDrone.Core.Parser;
 using NzbDrone.Core.Parser.Model;
@@ -32,6 +33,7 @@ namespace NzbDrone.Core.MediaFiles
         private readonly IGameService _gameService;
         private readonly IParsingService _parsingService;
         private readonly IMakeImportDecision _importDecisionMaker;
+        private readonly IGameArchiveService _gameArchiveService;
         private readonly IImportApprovedGame _importApprovedGame;
         private readonly IReleaseStructureValidator _releaseStructureValidator;
         private readonly IVirusScannerService _virusScanner;
@@ -46,6 +48,7 @@ namespace NzbDrone.Core.MediaFiles
                                                IGameService gameService,
                                                IParsingService parsingService,
                                                IMakeImportDecision importDecisionMaker,
+                                               IGameArchiveService gameArchiveService,
                                                IImportApprovedGame importApprovedGame,
                                                IReleaseStructureValidator releaseStructureValidator,
                                                IVirusScannerService virusScanner,
@@ -60,6 +63,7 @@ namespace NzbDrone.Core.MediaFiles
             _gameService = gameService;
             _parsingService = parsingService;
             _importDecisionMaker = importDecisionMaker;
+            _gameArchiveService = gameArchiveService;
             _importApprovedGame = importApprovedGame;
             _releaseStructureValidator = releaseStructureValidator;
             _virusScanner = virusScanner;
@@ -73,7 +77,8 @@ namespace NzbDrone.Core.MediaFiles
         {
             var results = new List<ImportResult>();
 
-            foreach (var subFolder in _diskProvider.GetDirectories(directoryInfo.FullName))
+            foreach (var subFolder in _diskProvider.GetDirectories(directoryInfo.FullName)
+                         .Where(path => !Path.GetFileName(path).EndsWith(".gamarr-unpacked", StringComparison.OrdinalIgnoreCase)))
             {
                 var folderResults = ProcessFolder(new DirectoryInfo(subFolder), ImportMode.Auto, null);
                 results.AddRange(folderResults);
@@ -185,6 +190,34 @@ namespace NzbDrone.Core.MediaFiles
 
         private List<ImportResult> ProcessFolder(DirectoryInfo directoryInfo, ImportMode importMode, Game game, DownloadClientItem downloadClientItem)
         {
+            string extractedFolder;
+
+            try
+            {
+                extractedFolder = _gameArchiveService.ExtractFolderArchive(directoryInfo.FullName);
+            }
+            catch (GameArchiveExtractionException ex)
+            {
+                _logger.Warn(ex, "Unable to extract an archive in release folder {0}", directoryInfo.FullName);
+
+                return new List<ImportResult>
+                {
+                    RejectionResult(ImportRejectionReason.ArchiveFile, ex.Message)
+                };
+            }
+
+            if (extractedFolder.IsNotNullOrWhiteSpace())
+            {
+                _logger.Debug("Processing extracted archive payload for release {0}", directoryInfo.Name);
+
+                return ProcessFolder(new DirectoryInfo(extractedFolder), importMode, game, downloadClientItem, directoryInfo.Name);
+            }
+
+            return ProcessFolder(directoryInfo, importMode, game, downloadClientItem, null);
+        }
+
+        private List<ImportResult> ProcessFolder(DirectoryInfo directoryInfo, ImportMode importMode, Game game, DownloadClientItem downloadClientItem, string releaseTitleOverride)
+        {
             if (_gameService.GamePathExists(directoryInfo.FullName))
             {
                 _logger.Warn("Unable to process folder that is mapped to an existing game");
@@ -194,7 +227,7 @@ namespace NzbDrone.Core.MediaFiles
                 };
             }
 
-            var cleanedUpName = GetCleanedUpFolderName(directoryInfo.Name);
+            var cleanedUpName = GetCleanedUpFolderName(releaseTitleOverride ?? directoryInfo.Name);
             var historyItems = _historyService.FindByDownloadId(downloadClientItem?.DownloadId ?? "");
             var firstHistoryItem = historyItems?.OrderByDescending(h => h.Date).FirstOrDefault();
             var folderInfo = Parser.Parser.ParseGameTitle(cleanedUpName);
@@ -358,6 +391,28 @@ namespace NzbDrone.Core.MediaFiles
                             new ImportRejection(ImportRejectionReason.ExecutableFile, $"Caution: Found executable file with extension: '{extension}'")),
                         $"Caution: Found executable file with extension: '{extension}'")
                 };
+            }
+
+            if (GameArchiveService.IsContainer(fileInfo.FullName))
+            {
+                try
+                {
+                    var extractedFolder = _gameArchiveService.ExtractArchive(fileInfo.FullName);
+
+                    if (extractedFolder.IsNotNullOrWhiteSpace())
+                    {
+                        return ProcessFolder(new DirectoryInfo(extractedFolder), importMode, game, downloadClientItem, Path.GetFileNameWithoutExtension(fileInfo.Name));
+                    }
+                }
+                catch (GameArchiveExtractionException ex)
+                {
+                    _logger.Warn(ex, "Unable to extract archive file {0}", fileInfo.FullName);
+
+                    return new List<ImportResult>
+                    {
+                        RejectionResult(ImportRejectionReason.ArchiveFile, ex.Message)
+                    };
+                }
             }
 
             if (!MediaFileExtensions.IsGameFileExtension(extension))

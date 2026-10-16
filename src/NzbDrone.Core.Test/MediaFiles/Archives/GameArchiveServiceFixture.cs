@@ -1,4 +1,5 @@
 using System.IO;
+using System.IO.Compression;
 using FluentAssertions;
 using Moq;
 using NUnit.Framework;
@@ -50,6 +51,18 @@ namespace NzbDrone.Core.Test.MediaFiles.Archives
             Mocker.GetMock<IDiskProvider>()
                   .Setup(s => s.MoveFile(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()))
                   .Callback<string, string, bool>((source, destination, overwrite) => File.Move(source, destination, overwrite));
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.CreateFolder(It.IsAny<string>()))
+                  .Callback<string>(path => Directory.CreateDirectory(path));
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.MoveFolder(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<bool>()))
+                  .Callback<string, string, bool>((source, destination, overwrite) => Directory.Move(source, destination));
+
+            Mocker.GetMock<IDiskProvider>()
+                  .Setup(s => s.DeleteFolder(It.IsAny<string>(), It.IsAny<bool>()))
+                  .Callback<string, bool>((path, recursive) => Directory.Delete(path, recursive));
         }
 
         private string GivenReleaseFolder(bool withLooseGameFile = false)
@@ -208,6 +221,54 @@ namespace NzbDrone.Core.Test.MediaFiles.Archives
             Subject.ExtractEntry(inspection, destination);
 
             new FileInfo(destination).Length.Should().Be(EntrySize);
+        }
+
+        [Test]
+        public void should_extract_a_multi_file_pc_archive_to_a_separate_folder()
+        {
+            var releaseFolder = Path.Combine(TempFolder, "Morrowind");
+            Directory.CreateDirectory(releaseFolder);
+            var archivePath = Path.Combine(releaseFolder, "Morrowind.zip");
+
+            using (var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create))
+            {
+                using (var writer = new StreamWriter(archive.CreateEntry("setup.exe").Open()))
+                {
+                    writer.Write("installer");
+                }
+
+                using (var writer = new StreamWriter(archive.CreateEntry("data1.bin").Open()))
+                {
+                    writer.Write("payload");
+                }
+            }
+
+            var extractedFolder = Subject.ExtractFolderArchive(releaseFolder);
+
+            extractedFolder.Should().Be(Path.Combine(releaseFolder, "Morrowind.gamarr-unpacked"));
+            File.ReadAllText(Path.Combine(extractedFolder, "setup.exe")).Should().Be("installer");
+            File.ReadAllText(Path.Combine(extractedFolder, "data1.bin")).Should().Be("payload");
+            File.Exists(archivePath).Should().BeTrue();
+            Directory.Exists(extractedFolder + ".partial~").Should().BeFalse();
+        }
+
+        [Test]
+        public void should_reject_an_archive_entry_that_escapes_the_extraction_folder()
+        {
+            var releaseFolder = Path.Combine(TempFolder, "Unsafe");
+            Directory.CreateDirectory(releaseFolder);
+            var archivePath = Path.Combine(releaseFolder, "Unsafe.zip");
+
+            using (var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create))
+            using (var writer = new StreamWriter(archive.CreateEntry("../outside.txt").Open()))
+            {
+                writer.Write("unsafe");
+            }
+
+            Assert.Throws<GameArchiveExtractionException>(() => Subject.ExtractFolderArchive(releaseFolder));
+
+            File.Exists(Path.Combine(TempFolder, "outside.txt")).Should().BeFalse();
+            Directory.Exists(Path.Combine(releaseFolder, "Unsafe.gamarr-unpacked.partial~")).Should().BeFalse();
         }
     }
 }
