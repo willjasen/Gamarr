@@ -6,6 +6,7 @@ FROM ghcr.io/linuxserver/baseimage-alpine:3.23
 ARG BUILD_DATE
 ARG VERSION
 ARG GAMARR_RELEASE
+ARG GAMARR_REPOSITORY="gamarr-app/Gamarr"
 LABEL build_version="Gamarr version:- ${VERSION} Build-date:- ${BUILD_DATE}"
 LABEL maintainer="gamarr-app"
 LABEL org.opencontainers.image.source="https://github.com/gamarr-app/Gamarr"
@@ -57,7 +58,7 @@ RUN \
   echo "**** install gamarr ****" && \
   mkdir -p /app/gamarr/bin && \
   if [ -z ${GAMARR_RELEASE+x} ]; then \
-    GAMARR_RELEASE=$(curl -sL "https://api.github.com/repos/gamarr-app/Gamarr/releases/latest" \
+    GAMARR_RELEASE=$(curl -sL "https://api.github.com/repos/${GAMARR_REPOSITORY}/releases/latest" \
     | jq -r '.tag_name' | sed 's/^v//'); \
   fi && \
   ARCH=$(uname -m) && \
@@ -70,7 +71,7 @@ RUN \
   echo "Downloading Gamarr ${GAMARR_RELEASE} for ${RUNTIME}" && \
   curl -o \
     /tmp/gamarr.tar.gz -L \
-    "https://github.com/gamarr-app/Gamarr/releases/download/v${GAMARR_RELEASE}/Gamarr.${GAMARR_RELEASE}.${RUNTIME}.tar.gz" && \
+    "https://github.com/${GAMARR_REPOSITORY}/releases/download/v${GAMARR_RELEASE}/Gamarr.${GAMARR_RELEASE}.${RUNTIME}.tar.gz" && \
   tar xzf \
     /tmp/gamarr.tar.gz -C \
     /app/gamarr/bin --strip-components=1 && \

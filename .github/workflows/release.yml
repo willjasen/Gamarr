@@ -517,6 +517,7 @@ jobs:
             BUILD_DATE=${{ github.event.repository.updated_at }}
             VERSION=${{ steps.version.outputs.version }}
             GAMARR_RELEASE=${{ steps.version.outputs.version }}
+            GAMARR_REPOSITORY=${{ github.repository }}
 
       - name: Start boot-test container
         run: |
@@ -575,3 +576,4 @@ jobs:
             BUILD_DATE=${{ github.event.repository.updated_at }}
             VERSION=${{ steps.version.outputs.version }}
             GAMARR_RELEASE=${{ steps.version.outputs.version }}
+            GAMARR_REPOSITORY=${{ github.repository }}
